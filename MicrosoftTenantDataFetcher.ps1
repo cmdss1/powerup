@@ -428,7 +428,7 @@ function New-SecurityTimeline {
                 EventType = "Authentication"
                 User = $log.userPrincipalName
                 Activity = "Sign-in Attempt"
-                Result = if ($log.status) { if ($log.status.errorCode -eq 0) { "Success" } else { "Failed" } } else { "Unknown" }
+                Result = if ($log.status -and $log.status.errorCode -eq 0) { "Success" } elseif ($log.status) { "Failed" } else { "Unknown" }
                 IPAddress = $log.ipAddress
                 Details = "Location: $location; Auth: $authMethods; Device: $(if ($log.deviceDetail) { $log.deviceDetail.displayName } else { 'Unknown' })"
                 RiskLevel = $riskLevel
