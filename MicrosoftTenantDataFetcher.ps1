@@ -85,6 +85,23 @@ function Get-Configuration {
     
     try {
         $config = Get-Content $ConfigPath | ConvertFrom-Json
+        
+        # Validate required configuration fields
+        if (-not $config.TenantId -or $config.TenantId -eq "your-tenant-id-here") {
+            Write-Error "TenantId is missing or not configured in config.json"
+            exit 1
+        }
+        
+        if (-not $config.ClientId -or $config.ClientId -eq "your-app-registration-client-id-here") {
+            Write-Error "ClientId is missing or not configured in config.json"
+            exit 1
+        }
+        
+        if (-not $config.ClientSecret -or $config.ClientSecret -eq "your-app-registration-client-secret-here") {
+            Write-Error "ClientSecret is missing or not configured in config.json"
+            exit 1
+        }
+        
         return $config
     } catch {
         Write-Error "Failed to parse configuration file: $($_.Exception.Message)"
@@ -179,7 +196,8 @@ function Get-UnifiedAuditLogs {
     
     # Add UPN filter if specified
     if ($UPN) {
-        $filters += "initiatedBy/user/userPrincipalName eq '$UPN'"
+        $encodedUPN = [System.Web.HttpUtility]::UrlEncode($UPN)
+        $filters += "initiatedBy/user/userPrincipalName eq '$encodedUPN'"
     }
     
     $filterString = $filters -join " and "
@@ -193,9 +211,12 @@ function Get-UnifiedAuditLogs {
             Write-Host "Fetching batch of audit logs..." -ForegroundColor Cyan
             $response = Invoke-GraphAPI -Uri $nextLink
             
-            if ($response.value) {
+            if ($response -and $response.value) {
                 $logs += $response.value
                 Write-Host "Retrieved $($response.value.Count) audit log entries" -ForegroundColor Green
+                Write-Verbose "API Response: $($response | ConvertTo-Json -Depth 2)"
+            } else {
+                Write-Verbose "No data in this batch"
             }
             
             $nextLink = $response.'@odata.nextLink'
@@ -228,7 +249,8 @@ function Get-SignInLogs {
     
     # Add UPN filter if specified
     if ($UPN) {
-        $filters += "userPrincipalName eq '$UPN'"
+        $encodedUPN = [System.Web.HttpUtility]::UrlEncode($UPN)
+        $filters += "userPrincipalName eq '$encodedUPN'"
     }
     
     $filterString = $filters -join " and "
@@ -242,9 +264,12 @@ function Get-SignInLogs {
             Write-Host "Fetching batch of sign-in logs..." -ForegroundColor Cyan
             $response = Invoke-GraphAPI -Uri $nextLink
             
-            if ($response.value) {
+            if ($response -and $response.value) {
                 $logs += $response.value
                 Write-Host "Retrieved $($response.value.Count) sign-in log entries" -ForegroundColor Green
+                Write-Verbose "API Response: $($response | ConvertTo-Json -Depth 2)"
+            } else {
+                Write-Verbose "No data in this batch"
             }
             
             $nextLink = $response.'@odata.nextLink'
@@ -283,10 +308,16 @@ function Export-DataToExcel {
             Write-Host "Excel file exported to: $excelFilePath" -ForegroundColor Green
         } else {
             Write-Host "No data to export for $FileName" -ForegroundColor Yellow
+            # Create empty Excel file with headers
+            [PSCustomObject]@{Message = "No data found for the specified criteria"} | Export-Excel -Path $excelFilePath -WorksheetName $SheetName -AutoSize -TableStyle Medium2 -BoldTopRow
         }
         
         # Also export to JSON for backup
-        $Data | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonFilePath -Encoding UTF8
+        if ($Data) {
+            $Data | ConvertTo-Json -Depth 10 | Out-File -FilePath $jsonFilePath -Encoding UTF8
+        } else {
+            '{"message": "No data found for the specified criteria"}' | Out-File -FilePath $jsonFilePath -Encoding UTF8
+        }
         Write-Host "JSON backup exported to: $jsonFilePath" -ForegroundColor Green
         
         return $excelFilePath
@@ -327,6 +358,11 @@ function Main {
         Write-Host "Microsoft Tenant Data Fetcher" -ForegroundColor Cyan
         Write-Host "=============================" -ForegroundColor Cyan
         Write-Host ""
+        
+        # Enable verbose output if requested
+        if ($VerboseOutput) {
+            $VerbosePreference = "Continue"
+        }
         
         # Interactive prompts if not using NoPrompt switch
         if (-not $NoPrompt) {
@@ -385,12 +421,13 @@ function Main {
             # Get directory audit logs for the user
             Write-Host "Fetching Unified Audit Logs for $UPN..." -ForegroundColor Yellow
             $ualLogs = Get-UnifiedAuditLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
-            Export-DataToExcel -Data $ualLogs -FileName "UnifiedAuditLogs_$($UPN.Replace('@', '_').Replace('.', '_'))" -OutputPath $OutputPath -SheetName "Unified Audit Logs"
+            $safeUPN = $UPN -replace '[^\w\-\.]', '_'
+            Export-DataToExcel -Data $ualLogs -FileName "UnifiedAuditLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Unified Audit Logs"
             
             # Get sign-in logs for the user
             Write-Host "Fetching Sign-in Logs for $UPN..." -ForegroundColor Yellow
             $signInLogs = Get-SignInLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
-            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs_$($UPN.Replace('@', '_').Replace('.', '_'))" -OutputPath $OutputPath -SheetName "Sign-in Logs"
+            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Sign-in Logs"
         } else {
             # Fetch all UAL logs
             Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
