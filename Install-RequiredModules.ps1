@@ -8,6 +8,7 @@ $modules = @(
     "Microsoft.Graph.Identity.SignIns", 
     "Microsoft.Graph.Identity.DirectoryManagement",
     "Microsoft.Graph.Reports",
+    "Microsoft.Graph.Security",
     "ImportExcel"
 )
 

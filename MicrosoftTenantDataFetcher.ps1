@@ -30,10 +30,11 @@ try {
     Import-Module Microsoft.Graph.Identity.SignIns -ErrorAction Stop
     Import-Module Microsoft.Graph.Identity.DirectoryManagement -ErrorAction Stop
     Import-Module Microsoft.Graph.Reports -ErrorAction Stop
+    Import-Module Microsoft.Graph.Security -ErrorAction Stop
     Import-Module ImportExcel -ErrorAction Stop
 } catch {
     Write-Error "Required modules not found. Please install them using:"
-    Write-Error "Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Identity.SignIns, Microsoft.Graph.Identity.DirectoryManagement, Microsoft.Graph.Reports, ImportExcel"
+    Write-Error "Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Identity.SignIns, Microsoft.Graph.Identity.DirectoryManagement, Microsoft.Graph.Reports, Microsoft.Graph.Security, ImportExcel"
     exit 1
 }
 
@@ -214,6 +215,132 @@ function Get-SignInLogs {
     }
 }
 
+# Function to fetch Purview audit logs
+function Get-PurviewAuditLogs {
+    param(
+        [string]$StartDate,
+        [string]$EndDate,
+        [string]$UPN = "",
+        [int]$Top = 1000
+    )
+    
+    Write-Host "Fetching Purview Audit Logs..." -ForegroundColor Yellow
+    
+    try {
+        $filters = @()
+        $filters += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
+        
+        if ($UPN) {
+            $filters += "initiatedBy/user/userPrincipalName eq '$UPN'"
+        }
+        
+        $filterString = $filters -join " and "
+        
+        # Get Purview audit logs using Microsoft Graph
+        $logs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            # Filter for Purview-related activities
+            $_.activityDisplayName -match "File|SharePoint|OneDrive|Exchange|Mailbox|Forward|Rule|Access|Download|Upload|Delete|Modify|Create" -or
+            $_.category -match "DataAccess|DataModification|DataExfiltration" -or
+            $_.operationType -match "File|Mail|Access"
+        }
+        
+        Write-Host "Total Purview Audit Logs retrieved: $($logs.Count)" -ForegroundColor Green
+        return $logs
+    } catch {
+        Write-Error "Failed to fetch Purview Audit Logs: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# Function to optimize Purview data for SOC analysis
+function Convert-PurviewDataForSOC {
+    param([object]$PurviewLogs)
+    
+    if (-not $PurviewLogs) {
+        return @()
+    }
+    
+    $enhancedLogs = $PurviewLogs | ForEach-Object {
+        $log = $_
+        
+        # Extract file information
+        $fileName = if ($log.targetResources) {
+            $fileResource = $log.targetResources | Where-Object { $_.displayName -like "*.*" }
+            if ($fileResource) { $fileResource.displayName } else { "Unknown" }
+        } else { "Unknown" }
+        
+        # Extract file path
+        $filePath = if ($log.targetResources) {
+            $fileResource = $log.targetResources | Where-Object { $_.displayName -like "*/*" -or $_.displayName -like "*\\*" }
+            if ($fileResource) { $fileResource.displayName } else { "Unknown" }
+        } else { "Unknown" }
+        
+        # Extract IP address
+        $ipAddress = if ($log.additionalDetails) {
+            $ipDetail = $log.additionalDetails | Where-Object { $_.key -eq "IpAddress" }
+            if ($ipDetail) { $ipDetail.value } else { "Unknown" }
+        } else { "Unknown" }
+        
+        # Extract user agent
+        $userAgent = if ($log.additionalDetails) {
+            $uaDetail = $log.additionalDetails | Where-Object { $_.key -eq "UserAgent" }
+            if ($uaDetail) { $uaDetail.value } else { "Unknown" }
+        } else { "Unknown" }
+        
+        # Determine activity type
+        $activityType = switch -Wildcard ($log.activityDisplayName) {
+            "*File*" { "File Access" }
+            "*Download*" { "File Download" }
+            "*Upload*" { "File Upload" }
+            "*Delete*" { "File Delete" }
+            "*Modify*" { "File Modify" }
+            "*Create*" { "File Create" }
+            "*Forward*" { "Email Forward" }
+            "*Rule*" { "Rule Change" }
+            "*SharePoint*" { "SharePoint Access" }
+            "*OneDrive*" { "OneDrive Access" }
+            "*Exchange*" { "Exchange Access" }
+            "*Mailbox*" { "Mailbox Access" }
+            default { "Data Access" }
+        }
+        
+        # Create optimized object for SOC analysis
+        [PSCustomObject]@{
+            # Essential Information
+            Timestamp = (Get-Date $log.activityDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+            User = $log.initiatedBy.user.userPrincipalName
+            Activity = $log.activityDisplayName
+            ActivityType = $activityType
+            Result = $log.result
+            
+            # File Information
+            FileName = $fileName
+            FilePath = $filePath
+            Resource = if ($log.targetResources) { ($log.targetResources | ForEach-Object { $_.displayName }) -join ", " } else { "Unknown" }
+            
+            # Network Information
+            IPAddress = $ipAddress
+            UserAgent = $userAgent
+            
+            # Security Context
+            Category = $log.category
+            OperationType = $log.operationType
+            IsSuccess = $log.result -eq "success"
+            
+            # Additional Details
+            Details = if ($log.additionalDetails) { 
+                ($log.additionalDetails | ForEach-Object { "$($_.key): $($_.value)" }) -join "; " 
+            } else { "None" }
+            
+            # Time Analysis
+            Hour = (Get-Date $log.activityDateTime).Hour
+            Day = (Get-Date $log.activityDateTime).DayOfWeek
+        }
+    }
+    
+    return $enhancedLogs
+}
+
 # Function to optimize sign-in data for fast SOC analysis
 function Convert-SignInDataForSOC {
     param([object]$SignInLogs)
@@ -307,7 +434,11 @@ function Export-DataToExcel {
     try {
         # Enhance data for SOC analysis if requested
         if ($EnhanceForSOC -and $Data) {
-            $Data = Convert-SignInDataForSOC -SignInLogs $Data
+            if ($SheetName -like "*Sign-in*") {
+                $Data = Convert-SignInDataForSOC -SignInLogs $Data
+            } elseif ($SheetName -like "*Purview*") {
+                $Data = Convert-PurviewDataForSOC -PurviewLogs $Data
+            }
         }
         
         # Export to Excel
@@ -436,6 +567,11 @@ function Main {
             Write-Host "Fetching Sign-in Logs for $UPN..." -ForegroundColor Yellow
             $signInLogs = Get-SignInLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
             Export-DataToExcel -Data $signInLogs -FileName "SignInLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Sign-in Logs" -EnhanceForSOC
+            
+            # Get Purview audit logs for the user
+            Write-Host "Fetching Purview Audit Logs for $UPN..." -ForegroundColor Yellow
+            $purviewLogs = Get-PurviewAuditLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
+            Export-DataToExcel -Data $purviewLogs -FileName "PurviewLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Purview Logs" -EnhanceForSOC
         } else {
             # Fetch all UAL logs
             Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
@@ -446,6 +582,11 @@ function Main {
             Write-Host "Fetching Sign-in Logs..." -ForegroundColor Yellow
             $signInLogs = Get-SignInLogs -StartDate $startDate -EndDate $endDate
             Export-DataToExcel -Data $signInLogs -FileName "SignInLogs" -OutputPath $OutputPath -SheetName "Sign-in Logs" -EnhanceForSOC
+            
+            # Fetch all Purview audit logs
+            Write-Host "Fetching Purview Audit Logs..." -ForegroundColor Yellow
+            $purviewLogs = Get-PurviewAuditLogs -StartDate $startDate -EndDate $endDate
+            Export-DataToExcel -Data $purviewLogs -FileName "PurviewLogs" -OutputPath $OutputPath -SheetName "Purview Logs" -EnhanceForSOC
         }
         
         Write-Host ""
