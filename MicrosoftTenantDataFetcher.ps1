@@ -137,43 +137,38 @@ function Connect-MicrosoftGraphApp {
     }
 }
 
-# Function to make authenticated API calls
-function Invoke-GraphAPI {
+# Function to make authenticated API calls using Microsoft Graph cmdlets
+function Get-GraphAuditLogs {
     param(
-        [string]$Uri,
-        [string]$Method = "GET",
-        [hashtable]$Headers = @{},
-        [object]$Body = $null
+        [string]$StartDate,
+        [string]$EndDate,
+        [string]$UPN = "",
+        [string]$LogType = "DirectoryAudit"
     )
     
-    $defaultHeaders = @{
-        "Authorization" = "Bearer $script:AccessToken"
-        "Content-Type" = "application/json"
-    }
-    
-    $allHeaders = $defaultHeaders + $Headers
-    
     try {
-        $params = @{
-            Uri = $Uri
-            Method = $Method
-            Headers = $allHeaders
+        $filters = @()
+        
+        if ($LogType -eq "DirectoryAudit") {
+            $filters += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
+            if ($UPN) {
+                $filters += "initiatedBy/user/userPrincipalName eq '$UPN'"
+            }
+            $filterString = $filters -join " and "
+            $logs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All
+        } else {
+            $filters += "createdDateTime ge $StartDate and createdDateTime le $EndDate"
+            if ($UPN) {
+                $filters += "userPrincipalName eq '$UPN'"
+            }
+            $filterString = $filters -join " and "
+            $logs = Get-MgAuditLogSignIn -Filter $filterString -All
         }
         
-        if ($Body) {
-            $params.Body = $Body | ConvertTo-Json -Depth 10
-        }
-        
-        $response = Invoke-RestMethod @params
-        return $response
+        return $logs
     } catch {
-        Write-Error "API call failed: $($_.Exception.Message)"
-        if ($_.Exception.Response) {
-            $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
-            $responseBody = $reader.ReadToEnd()
-            Write-Error "Response: $responseBody"
-        }
-        throw
+        Write-Error "Failed to fetch $LogType logs: $($_.Exception.Message)"
+        return @()
     }
 }
 
@@ -188,40 +183,8 @@ function Get-UnifiedAuditLogs {
     
     Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
     
-    $baseUri = "https://graph.microsoft.com/v1.0/auditLogs/directoryAudits"
-    $filters = @()
-    
-    # Add date filter
-    $filters += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
-    
-    # Add UPN filter if specified
-    if ($UPN) {
-        $encodedUPN = [System.Web.HttpUtility]::UrlEncode($UPN)
-        $filters += "initiatedBy/user/userPrincipalName eq '$encodedUPN'"
-    }
-    
-    $filterString = $filters -join " and "
-    $uri = "$baseUri`?`$filter=$filterString&`$top=$Top"
-    
     try {
-        $logs = @()
-        $nextLink = $uri
-        
-        while ($nextLink) {
-            Write-Host "Fetching batch of audit logs..." -ForegroundColor Cyan
-            $response = Invoke-GraphAPI -Uri $nextLink
-            
-            if ($response -and $response.value) {
-                $logs += $response.value
-                Write-Host "Retrieved $($response.value.Count) audit log entries" -ForegroundColor Green
-                Write-Verbose "API Response: $($response | ConvertTo-Json -Depth 2)"
-            } else {
-                Write-Verbose "No data in this batch"
-            }
-            
-            $nextLink = $response.'@odata.nextLink'
-        }
-        
+        $logs = Get-GraphAuditLogs -StartDate $StartDate -EndDate $EndDate -UPN $UPN -LogType "DirectoryAudit"
         Write-Host "Total Unified Audit Logs retrieved: $($logs.Count)" -ForegroundColor Green
         return $logs
     } catch {
@@ -241,40 +204,8 @@ function Get-SignInLogs {
     
     Write-Host "Fetching Sign-in Logs..." -ForegroundColor Yellow
     
-    $baseUri = "https://graph.microsoft.com/v1.0/auditLogs/signIns"
-    $filters = @()
-    
-    # Add date filter
-    $filters += "createdDateTime ge $StartDate and createdDateTime le $EndDate"
-    
-    # Add UPN filter if specified
-    if ($UPN) {
-        $encodedUPN = [System.Web.HttpUtility]::UrlEncode($UPN)
-        $filters += "userPrincipalName eq '$encodedUPN'"
-    }
-    
-    $filterString = $filters -join " and "
-    $uri = "$baseUri`?`$filter=$filterString&`$top=$Top"
-    
     try {
-        $logs = @()
-        $nextLink = $uri
-        
-        while ($nextLink) {
-            Write-Host "Fetching batch of sign-in logs..." -ForegroundColor Cyan
-            $response = Invoke-GraphAPI -Uri $nextLink
-            
-            if ($response -and $response.value) {
-                $logs += $response.value
-                Write-Host "Retrieved $($response.value.Count) sign-in log entries" -ForegroundColor Green
-                Write-Verbose "API Response: $($response | ConvertTo-Json -Depth 2)"
-            } else {
-                Write-Verbose "No data in this batch"
-            }
-            
-            $nextLink = $response.'@odata.nextLink'
-        }
-        
+        $logs = Get-GraphAuditLogs -StartDate $StartDate -EndDate $EndDate -UPN $UPN -LogType "SignIn"
         Write-Host "Total Sign-in Logs retrieved: $($logs.Count)" -ForegroundColor Green
         return $logs
     } catch {
