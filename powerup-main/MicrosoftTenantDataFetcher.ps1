@@ -214,133 +214,6 @@ function Get-SignInLogs {
     }
 }
 
-# Function to enhance sign-in data for SOC analysis
-function Convert-SignInDataForSOC {
-    param([object]$SignInLogs)
-    
-    if (-not $SignInLogs) {
-        return @()
-    }
-    
-    $enhancedLogs = $SignInLogs | ForEach-Object {
-        $log = $_
-        
-        # Extract location information
-        $location = if ($log.location) {
-            "$($log.location.city), $($log.location.state), $($log.location.countryOrRegion)"
-        } else { "Unknown" }
-        
-        # Extract device information (for future use)
-        # $deviceInfo = if ($log.deviceDetail) {
-        #     "$($log.deviceDetail.displayName) ($($log.deviceDetail.operatingSystem))"
-        # } else { "Unknown Device" }
-        
-        # Extract risk assessment
-        $riskLevel = if ($log.riskLevelDuringSignIn) {
-            $log.riskLevelDuringSignIn
-        } else { "Not Assessed" }
-        
-        $riskState = if ($log.riskStateDuringSignIn) {
-            $log.riskStateDuringSignIn
-        } else { "Not Assessed" }
-        
-        # Extract authentication details
-        $authMethods = if ($log.authenticationDetails) {
-            ($log.authenticationDetails | ForEach-Object { $_.authenticationMethod }) -join ", "
-        } else { "Unknown" }
-        
-        # Extract conditional access results
-        $caResult = if ($log.conditionalAccessStatus) {
-            $log.conditionalAccessStatus
-        } else { "Not Applied" }
-        
-        # Extract client app information
-        $clientApp = if ($log.clientAppUsed) {
-            $log.clientAppUsed
-        } else { "Unknown" }
-        
-        # Extract browser information
-        $browser = if ($log.browser) {
-            "$($log.browser) $($log.browserVersion)"
-        } else { "Unknown" }
-        
-        # Extract operating system
-        $os = if ($log.deviceDetail -and $log.deviceDetail.operatingSystem) {
-            $log.deviceDetail.operatingSystem
-        } else { "Unknown" }
-        
-        # Extract user agent
-        $userAgent = if ($log.userAgent) {
-            $log.userAgent
-        } else { "Unknown" }
-        
-        # Extract additional risk factors
-        $riskFactors = if ($log.riskEventTypes) {
-            ($log.riskEventTypes | ForEach-Object { $_ }) -join ", "
-        } else { "None" }
-        
-        # Create enhanced object with SOC-relevant fields
-        [PSCustomObject]@{
-            # Basic Information
-            Timestamp = $log.createdDateTime
-            UserPrincipalName = $log.userPrincipalName
-            UserDisplayName = $log.userDisplayName
-            UserId = $log.userId
-            
-            # Authentication Details
-            AuthenticationMethod = $authMethods
-            AuthenticationRequirement = $log.authenticationRequirement
-            AuthenticationRequirementPolicies = if ($log.authenticationRequirementPolicies) { ($log.authenticationRequirementPolicies | ForEach-Object { $_ }) -join ", " } else { "None" }
-            
-            # Location and Network
-            IPAddress = $log.ipAddress
-            Location = $location
-            City = if ($log.location) { $log.location.city } else { "Unknown" }
-            State = if ($log.location) { $log.location.state } else { "Unknown" }
-            Country = if ($log.location) { $log.location.countryOrRegion } else { "Unknown" }
-            GeoCoordinates = if ($log.location) { "$($log.location.geoCoordinates.latitude), $($log.location.geoCoordinates.longitude)" } else { "Unknown" }
-            
-            # Device Information
-            DeviceDisplayName = if ($log.deviceDetail) { $log.deviceDetail.displayName } else { "Unknown" }
-            DeviceOperatingSystem = $os
-            DeviceBrowser = $browser
-            ClientAppUsed = $clientApp
-            UserAgent = $userAgent
-            
-            # Security and Risk Assessment
-            RiskLevel = $riskLevel
-            RiskState = $riskState
-            RiskEventTypes = $riskFactors
-            RiskDetail = if ($log.riskDetail) { $log.riskDetail } else { "None" }
-            
-            # Conditional Access
-            ConditionalAccessStatus = $caResult
-            ConditionalAccessPolicies = if ($log.appliedConditionalAccessPolicies) { 
-                ($log.appliedConditionalAccessPolicies | ForEach-Object { "$($_.displayName): $($_.result)" }) -join "; " 
-            } else { "None Applied" }
-            
-            # Sign-in Status
-            SignInStatus = if ($log.status) { $log.status.errorCode } else { "Unknown" }
-            SignInResult = if ($log.status) { $log.status.failureReason } else { "Unknown" }
-            SignInSuccess = if ($log.status) { $log.status.errorCode -eq 0 } else { $false }
-            
-            # Additional Security Context
-            IsInteractive = $log.isInteractive
-            IsRisky = $log.isRisky
-            ResourceDisplayName = $log.resourceDisplayName
-            ResourceId = $log.resourceId
-            
-            # Time-based Analysis
-            SignInHour = (Get-Date $log.createdDateTime).Hour
-            SignInDayOfWeek = (Get-Date $log.createdDateTime).DayOfWeek
-            
-            # Raw Data for Deep Analysis
-            RawData = $log | ConvertTo-Json -Depth 5
-        }
-    }
-    
-    return $enhancedLogs
-}
 
 # Function to export data to Excel files
 function Export-DataToExcel {
@@ -348,8 +221,7 @@ function Export-DataToExcel {
         [object]$Data,
         [string]$FileName,
         [string]$OutputPath,
-        [string]$SheetName = "Data",
-        [switch]$EnhanceForSOC = $false
+        [string]$SheetName = "Data"
     )
     
     if (-not (Test-Path $OutputPath)) {
@@ -361,11 +233,6 @@ function Export-DataToExcel {
     $jsonFilePath = Join-Path $OutputPath "$FileName`_$timestamp.json"
     
     try {
-        # Enhance data for SOC analysis if requested
-        if ($EnhanceForSOC -and $Data) {
-            $Data = Convert-SignInDataForSOC -SignInLogs $Data
-        }
-        
         # Export to Excel
         if ($Data -and $Data.Count -gt 0) {
             $Data | Export-Excel -Path $excelFilePath -WorksheetName $SheetName -AutoSize -TableStyle Medium2 -BoldTopRow
@@ -491,7 +358,7 @@ function Main {
             # Get sign-in logs for the user
             Write-Host "Fetching Sign-in Logs for $UPN..." -ForegroundColor Yellow
             $signInLogs = Get-SignInLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
-            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Sign-in Logs" -EnhanceForSOC
+            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Sign-in Logs"
         } else {
             # Fetch all UAL logs
             Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
@@ -501,7 +368,7 @@ function Main {
             # Fetch all sign-in logs
             Write-Host "Fetching Sign-in Logs..." -ForegroundColor Yellow
             $signInLogs = Get-SignInLogs -StartDate $startDate -EndDate $endDate
-            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs" -OutputPath $OutputPath -SheetName "Sign-in Logs" -EnhanceForSOC
+            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs" -OutputPath $OutputPath -SheetName "Sign-in Logs"
         }
         
         Write-Host ""
