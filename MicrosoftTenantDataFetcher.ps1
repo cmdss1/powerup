@@ -215,6 +215,118 @@ function Get-SignInLogs {
     }
 }
 
+# Function to check email forwarding rules for a specific user
+function Get-EmailForwardingRules {
+    param(
+        [string]$UPN,
+        [string]$StartDate,
+        [string]$EndDate
+    )
+    
+    Write-Host "Checking email forwarding rules for $UPN..." -ForegroundColor Yellow
+    
+    try {
+        # Get forwarding rules from audit logs
+        $filters = @()
+        $filters += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
+        $filters += "initiatedBy/user/userPrincipalName eq '$UPN'"
+        
+        $filterString = $filters -join " and "
+        
+        # Get audit logs related to forwarding rules
+        $forwardingLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Forward|Rule|Mailbox|Inbox" -or
+            $_.operationType -match "Forward|Rule|Mail" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { $_.key -match "Forward|Rule|Mail" }))
+        }
+        
+        # Also check for any rules that might forward TO this user
+        $filtersTo = @()
+        $filtersTo += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
+        $filterStringTo = $filtersTo -join " and "
+        
+        $forwardingToLogs = Get-MgAuditLogDirectoryAudit -Filter $filterStringTo -All | Where-Object {
+            ($_.targetResources -and ($_.targetResources | Where-Object { $_.displayName -eq $UPN })) -and
+            ($_.activityDisplayName -match "Forward|Rule|Mailbox" -or $_.operationType -match "Forward|Rule|Mail")
+        }
+        
+        $allForwardingLogs = $forwardingLogs + $forwardingToLogs
+        
+        Write-Host "Found $($allForwardingLogs.Count) forwarding-related activities" -ForegroundColor Green
+        return $allForwardingLogs
+    } catch {
+        Write-Error "Failed to check forwarding rules: $($_.Exception.Message)"
+        return @()
+    }
+}
+
+# Function to optimize forwarding rules data for SOC analysis
+function Convert-ForwardingRulesForSOC {
+    param([object]$ForwardingLogs)
+    
+    if (-not $ForwardingLogs) {
+        return @()
+    }
+    
+    $enhancedLogs = $ForwardingLogs | ForEach-Object {
+        $log = $_
+        
+        # Extract forwarding details
+        $forwardingDetails = if ($log.additionalDetails) {
+            $forwardDetail = $log.additionalDetails | Where-Object { $_.key -match "Forward|Rule|Mail" }
+            if ($forwardDetail) { $forwardDetail.value } else { "Unknown" }
+        } else { "Unknown" }
+        
+        # Extract target information
+        $targetInfo = if ($log.targetResources) {
+            ($log.targetResources | ForEach-Object { $_.displayName }) -join ", "
+        } else { "Unknown" }
+        
+        # Determine rule type
+        $ruleType = switch -Wildcard ($log.activityDisplayName) {
+            "*Forward*" { "Email Forwarding" }
+            "*Rule*" { "Mailbox Rule" }
+            "*Inbox*" { "Inbox Rule" }
+            "*Mailbox*" { "Mailbox Configuration" }
+            default { "Email Rule" }
+        }
+        
+        # Create optimized object for SOC analysis
+        [PSCustomObject]@{
+            # Essential Information
+            Timestamp = (Get-Date $log.activityDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+            User = $log.initiatedBy.user.userPrincipalName
+            Activity = $log.activityDisplayName
+            RuleType = $ruleType
+            Result = $log.result
+            
+            # Forwarding Information
+            TargetUser = $targetInfo
+            ForwardingDetails = $forwardingDetails
+            IPAddress = if ($log.additionalDetails) {
+                $ipDetail = $log.additionalDetails | Where-Object { $_.key -eq "IpAddress" }
+                if ($ipDetail) { $ipDetail.value } else { "Unknown" }
+            } else { "Unknown" }
+            
+            # Security Context
+            Category = $log.category
+            OperationType = $log.operationType
+            IsSuccess = $log.result -eq "success"
+            
+            # Additional Details
+            Details = if ($log.additionalDetails) { 
+                ($log.additionalDetails | ForEach-Object { "$($_.key): $($_.value)" }) -join "; " 
+            } else { "None" }
+            
+            # Time Analysis
+            Hour = (Get-Date $log.activityDateTime).Hour
+            Day = (Get-Date $log.activityDateTime).DayOfWeek
+        }
+    }
+    
+    return $enhancedLogs
+}
+
 # Function to fetch Purview audit logs
 function Get-PurviewAuditLogs {
     param(
@@ -438,6 +550,8 @@ function Export-DataToExcel {
                 $Data = Convert-SignInDataForSOC -SignInLogs $Data
             } elseif ($SheetName -like "*Purview*") {
                 $Data = Convert-PurviewDataForSOC -PurviewLogs $Data
+            } elseif ($SheetName -like "*Forwarding*") {
+                $Data = Convert-ForwardingRulesForSOC -ForwardingLogs $Data
             }
         }
         
@@ -572,6 +686,11 @@ function Main {
             Write-Host "Fetching Purview Audit Logs for $UPN..." -ForegroundColor Yellow
             $purviewLogs = Get-PurviewAuditLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
             Export-DataToExcel -Data $purviewLogs -FileName "PurviewLogs_$safeUPN" -OutputPath $OutputPath -SheetName "Purview Logs" -EnhanceForSOC
+            
+            # Get email forwarding rules for the user
+            Write-Host "Checking Email Forwarding Rules for $UPN..." -ForegroundColor Yellow
+            $forwardingRules = Get-EmailForwardingRules -UPN $UPN -StartDate $startDate -EndDate $endDate
+            Export-DataToExcel -Data $forwardingRules -FileName "ForwardingRules_$safeUPN" -OutputPath $OutputPath -SheetName "Forwarding Rules" -EnhanceForSOC
         } else {
             # Fetch all UAL logs
             Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
@@ -587,6 +706,11 @@ function Main {
             Write-Host "Fetching Purview Audit Logs..." -ForegroundColor Yellow
             $purviewLogs = Get-PurviewAuditLogs -StartDate $startDate -EndDate $endDate
             Export-DataToExcel -Data $purviewLogs -FileName "PurviewLogs" -OutputPath $OutputPath -SheetName "Purview Logs" -EnhanceForSOC
+            
+            # Fetch all email forwarding rules
+            Write-Host "Checking Email Forwarding Rules..." -ForegroundColor Yellow
+            $forwardingRules = Get-EmailForwardingRules -UPN "" -StartDate $startDate -EndDate $endDate
+            Export-DataToExcel -Data $forwardingRules -FileName "ForwardingRules" -OutputPath $OutputPath -SheetName "Forwarding Rules" -EnhanceForSOC
         }
         
         Write-Host ""
