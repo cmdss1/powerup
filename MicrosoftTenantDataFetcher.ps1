@@ -15,7 +15,7 @@ param(
     [int]$DaysBack = 0,
     
     [Parameter(Mandatory=$false)]
-    [switch]$Verbose,
+    [switch]$VerboseOutput,
     
     [Parameter(Mandatory=$false)]
     [switch]$NoPrompt

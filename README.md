@@ -106,7 +106,7 @@ A PowerShell tool to fetch Microsoft tenant data including Unified Audit Logs (U
 - `-OutputPath`: Directory to save exported data (default: ".\output")
 - `-UPN`: User Principal Name to filter audit activity (optional)
 - `-DaysBack`: Number of days to look back (default: 30, or prompted if 0)
-- `-Verbose`: Enable verbose output
+- `-VerboseOutput`: Enable verbose output
 - `-NoPrompt`: Skip interactive prompts and use default values
 
 ### Examples
