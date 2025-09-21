@@ -32,9 +32,10 @@ try {
     Import-Module Microsoft.Graph.Reports -ErrorAction Stop
     Import-Module Microsoft.Graph.Security -ErrorAction Stop
     Import-Module ImportExcel -ErrorAction Stop
+    Import-Module ExchangeOnlineManagement -ErrorAction Stop
 } catch {
     Write-Error "Required modules not found. Please install them using:"
-    Write-Error "Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Identity.SignIns, Microsoft.Graph.Identity.DirectoryManagement, Microsoft.Graph.Reports, Microsoft.Graph.Security, ImportExcel"
+    Write-Error "Install-Module Microsoft.Graph.Authentication, Microsoft.Graph.Identity.SignIns, Microsoft.Graph.Identity.DirectoryManagement, Microsoft.Graph.Reports, Microsoft.Graph.Security, ImportExcel, ExchangeOnlineManagement"
     exit 1
 }
 
@@ -264,44 +265,129 @@ function Get-EmailForwardingRules {
         Write-Host "  Found $($forwardingLogs.Count) forwarding-related audit activities" -ForegroundColor Green
         $allForwardingData += $forwardingLogs
         
-        # Method 2: Check current mailbox forwarding configuration via Graph API
+        # Method 2: Check current mailbox forwarding configuration via Exchange Online PowerShell
         if ($UPN) {
-            Write-Host "  Checking current mailbox forwarding configuration..." -ForegroundColor Cyan
+            Write-Host "  Checking current mailbox forwarding configuration via Exchange Online..." -ForegroundColor Cyan
             try {
-                # Get user's mailbox settings
-                $user = Get-MgUser -UserId $UPN -Property "mail,mailNickname,userPrincipalName"
-                
-                # Try to get mailbox forwarding rules via Graph API
-                $mailboxSettings = @()
-                
-                # Check for forwarding rules in additional details of recent audit logs
-                $recentLogs = Get-MgAuditLogDirectoryAudit -Filter "activityDateTime ge $StartDate" -All | Where-Object {
-                    $_.targetResources -and ($_.targetResources | Where-Object { $_.displayName -eq $UPN -or $_.displayName -eq $user.mail })
-                }
-                
-                foreach ($log in $recentLogs) {
-                    if ($log.additionalDetails) {
-                        $forwardingDetails = $log.additionalDetails | Where-Object { 
-                            $_.key -match "Forward|Rule|Mail|Exchange|Smtp|Recipient" 
-                        }
-                        
-                        if ($forwardingDetails) {
-                            $mailboxSettings += [PSCustomObject]@{
-                                activityDateTime = $log.activityDateTime
-                                activityDisplayName = "Current Mailbox Forwarding Configuration"
-                                initiatedBy = $log.initiatedBy
-                                targetResources = $log.targetResources
-                                result = "success"
-                                category = "Exchange"
-                                operationType = "MailboxForwarding"
-                                additionalDetails = $log.additionalDetails
-                            }
+                # Try to connect to Exchange Online PowerShell
+                $exchangeSession = $null
+                try {
+                    # Check if we're already connected to Exchange Online
+                    $exchangeSession = Get-PSSession | Where-Object { $_.ConfigurationName -eq "Microsoft.Exchange" -and $_.State -eq "Opened" }
+                    
+                    if (-not $exchangeSession) {
+                        Write-Host "    Attempting to connect to Exchange Online PowerShell..." -ForegroundColor Yellow
+                        # Try to connect to Exchange Online
+                        try {
+                            Connect-ExchangeOnline -ShowBanner:$false -ShowProgress:$false
+                            $exchangeSession = Get-PSSession | Where-Object { $_.ConfigurationName -eq "Microsoft.Exchange" -and $_.State -eq "Opened" }
+                        } catch {
+                            Write-Warning "    Could not connect to Exchange Online PowerShell: $($_.Exception.Message)"
                         }
                     }
+                    
+                    if ($exchangeSession) {
+                        Write-Host "    Connected to Exchange Online PowerShell successfully" -ForegroundColor Green
+                        
+                        # Get mailbox forwarding configuration
+                        try {
+                            $mailbox = Get-Mailbox -Identity $UPN -ErrorAction Stop
+                            
+                            $mailboxSettings = @()
+                            
+                            # Check for forwarding configuration
+                            if ($mailbox.ForwardingAddress -or $mailbox.ForwardingSmtpAddress) {
+                                $forwardingConfig = [PSCustomObject]@{
+                                    activityDateTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                                    activityDisplayName = "Current Mailbox Forwarding Configuration"
+                                    initiatedBy = @{
+                                        user = @{
+                                            userPrincipalName = $UPN
+                                        }
+                                    }
+                                    targetResources = @(
+                                        @{
+                                            displayName = $UPN
+                                        }
+                                    )
+                                    result = "success"
+                                    category = "Exchange"
+                                    operationType = "MailboxForwarding"
+                                    additionalDetails = @(
+                                        @{
+                                            key = "ForwardingAddress"
+                                            value = if ($mailbox.ForwardingAddress) { $mailbox.ForwardingAddress.ToString() } else { "None" }
+                                        },
+                                        @{
+                                            key = "ForwardingSmtpAddress"
+                                            value = if ($mailbox.ForwardingSmtpAddress) { $mailbox.ForwardingSmtpAddress } else { "None" }
+                                        },
+                                        @{
+                                            key = "DeliverToMailboxAndForward"
+                                            value = $mailbox.DeliverToMailboxAndForward
+                                        }
+                                    )
+                                }
+                                $mailboxSettings += $forwardingConfig
+                            }
+                            
+                            # Get inbox rules
+                            try {
+                                $inboxRules = Get-InboxRule -Mailbox $UPN -ErrorAction Stop
+                                foreach ($rule in $inboxRules) {
+                                    if ($rule.ForwardTo -or $rule.RedirectTo) {
+                                        $ruleConfig = [PSCustomObject]@{
+                                            activityDateTime = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ss.fffZ")
+                                            activityDisplayName = "Current Inbox Rule: $($rule.Name)"
+                                            initiatedBy = @{
+                                                user = @{
+                                                    userPrincipalName = $UPN
+                                                }
+                                            }
+                                            targetResources = @(
+                                                @{
+                                                    displayName = $UPN
+                                                }
+                                            )
+                                            result = "success"
+                                            category = "Exchange"
+                                            operationType = "InboxRule"
+                                            additionalDetails = @(
+                                                @{
+                                                    key = "RuleName"
+                                                    value = $rule.Name
+                                                },
+                                                @{
+                                                    key = "ForwardTo"
+                                                    value = if ($rule.ForwardTo) { $rule.ForwardTo -join ", " } else { "None" }
+                                                },
+                                                @{
+                                                    key = "RedirectTo"
+                                                    value = if ($rule.RedirectTo) { $rule.RedirectTo -join ", " } else { "None" }
+                                                },
+                                                @{
+                                                    key = "Enabled"
+                                                    value = $rule.Enabled
+                                                }
+                                            )
+                                        }
+                                        $mailboxSettings += $ruleConfig
+                                    }
+                                }
+                            } catch {
+                                Write-Warning "    Could not get inbox rules: $($_.Exception.Message)"
+                            }
+                            
+                            Write-Host "    Found $($mailboxSettings.Count) current mailbox forwarding configurations" -ForegroundColor Green
+                            $allForwardingData += $mailboxSettings
+                            
+                        } catch {
+                            Write-Warning "    Could not get mailbox configuration: $($_.Exception.Message)"
+                        }
+                    }
+                } catch {
+                    Write-Warning "    Could not establish Exchange Online connection: $($_.Exception.Message)"
                 }
-                
-                Write-Host "  Found $($mailboxSettings.Count) current mailbox forwarding configurations" -ForegroundColor Green
-                $allForwardingData += $mailboxSettings
                 
             } catch {
                 Write-Warning "  Could not check current mailbox configuration: $($_.Exception.Message)"
