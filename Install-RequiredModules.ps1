@@ -9,8 +9,7 @@ $modules = @(
     "Microsoft.Graph.Identity.DirectoryManagement",
     "Microsoft.Graph.Reports",
     "Microsoft.Graph.Security",
-    "ImportExcel",
-    "ExchangeOnlineManagement"
+    "ImportExcel"
 )
 
 foreach ($module in $modules) {
