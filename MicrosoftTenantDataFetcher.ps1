@@ -99,14 +99,8 @@ function Connect-MicrosoftGraphApp {
     try {
         Write-Host "Authenticating with Microsoft Graph using app registration..." -ForegroundColor Green
         
-        # Create secure string for client secret
-        $SecureSecret = ConvertTo-SecureString $Config.ClientSecret -AsPlainText -Force
-        
-        # Create credential object
-        $Credential = New-Object System.Management.Automation.PSCredential($Config.ClientId, $SecureSecret)
-        
-        # Connect to Microsoft Graph
-        Connect-MgGraph -ClientId $Config.ClientId -ClientSecretCredential $Credential -TenantId $Config.TenantId
+        # Connect to Microsoft Graph using app registration
+        Connect-MgGraph -ClientId $Config.ClientId -ClientSecret $Config.ClientSecret -TenantId $Config.TenantId
         
         # Get access token for direct API calls
         $script:AccessToken = (Get-MgContext).AccessToken
