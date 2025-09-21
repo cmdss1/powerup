@@ -214,7 +214,7 @@ function Get-SignInLogs {
     }
 }
 
-# Function to enhance sign-in data for SOC analysis
+# Function to optimize sign-in data for fast SOC analysis
 function Convert-SignInDataForSOC {
     param([object]$SignInLogs)
     
@@ -225,117 +225,61 @@ function Convert-SignInDataForSOC {
     $enhancedLogs = $SignInLogs | ForEach-Object {
         $log = $_
         
-        # Extract location information
+        # Extract only essential data for speed
         $location = if ($log.location) {
             "$($log.location.city), $($log.location.state), $($log.location.countryOrRegion)"
         } else { "Unknown" }
         
-        # Extract device information (for future use)
-        # $deviceInfo = if ($log.deviceDetail) {
-        #     "$($log.deviceDetail.displayName) ($($log.deviceDetail.operatingSystem))"
-        # } else { "Unknown Device" }
-        
-        # Extract risk assessment
         $riskLevel = if ($log.riskLevelDuringSignIn) {
             $log.riskLevelDuringSignIn
         } else { "Not Assessed" }
         
-        $riskState = if ($log.riskStateDuringSignIn) {
-            $log.riskStateDuringSignIn
-        } else { "Not Assessed" }
-        
-        # Extract authentication details
         $authMethods = if ($log.authenticationDetails) {
             ($log.authenticationDetails | ForEach-Object { $_.authenticationMethod }) -join ", "
         } else { "Unknown" }
         
-        # Extract conditional access results
         $caResult = if ($log.conditionalAccessStatus) {
             $log.conditionalAccessStatus
         } else { "Not Applied" }
         
-        # Extract client app information
         $clientApp = if ($log.clientAppUsed) {
             $log.clientAppUsed
         } else { "Unknown" }
         
-        # Extract browser information
-        $browser = if ($log.browser) {
-            "$($log.browser) $($log.browserVersion)"
-        } else { "Unknown" }
-        
-        # Extract operating system
         $os = if ($log.deviceDetail -and $log.deviceDetail.operatingSystem) {
             $log.deviceDetail.operatingSystem
         } else { "Unknown" }
         
-        # Extract user agent
-        $userAgent = if ($log.userAgent) {
-            $log.userAgent
-        } else { "Unknown" }
-        
-        # Extract additional risk factors
-        $riskFactors = if ($log.riskEventTypes) {
-            ($log.riskEventTypes | ForEach-Object { $_ }) -join ", "
-        } else { "None" }
-        
-        # Create enhanced object with SOC-relevant fields
+        # Create optimized object with essential SOC fields only
         [PSCustomObject]@{
-            # Basic Information
-            Timestamp = $log.createdDateTime
-            UserPrincipalName = $log.userPrincipalName
-            UserDisplayName = $log.userDisplayName
-            UserId = $log.userId
-            
-            # Authentication Details
-            AuthenticationMethod = $authMethods
-            AuthenticationRequirement = $log.authenticationRequirement
-            AuthenticationRequirementPolicies = if ($log.authenticationRequirementPolicies) { ($log.authenticationRequirementPolicies | ForEach-Object { $_ }) -join ", " } else { "None" }
-            
-            # Location and Network
-            IPAddress = $log.ipAddress
+            # Essential Information
+            Timestamp = (Get-Date $log.createdDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+            User = $log.userPrincipalName
+            IP = $log.ipAddress
             Location = $location
-            City = if ($log.location) { $log.location.city } else { "Unknown" }
-            State = if ($log.location) { $log.location.state } else { "Unknown" }
-            Country = if ($log.location) { $log.location.countryOrRegion } else { "Unknown" }
-            GeoCoordinates = if ($log.location) { "$($log.location.geoCoordinates.latitude), $($log.location.geoCoordinates.longitude)" } else { "Unknown" }
+            Success = if ($log.status) { $log.status.errorCode -eq 0 } else { $false }
             
-            # Device Information
-            DeviceDisplayName = if ($log.deviceDetail) { $log.deviceDetail.displayName } else { "Unknown" }
-            DeviceOperatingSystem = $os
-            DeviceBrowser = $browser
-            ClientAppUsed = $clientApp
-            UserAgent = $userAgent
-            
-            # Security and Risk Assessment
+            # Security Assessment
             RiskLevel = $riskLevel
-            RiskState = $riskState
-            RiskEventTypes = $riskFactors
-            RiskDetail = if ($log.riskDetail) { $log.riskDetail } else { "None" }
+            IsRisky = $log.isRisky
+            AuthMethod = $authMethods
+            MFA = if ($authMethods -like "*MFA*" -or $authMethods -like "*Multi*") { "Yes" } else { "No" }
+            
+            # Device & App
+            Device = if ($log.deviceDetail) { $log.deviceDetail.displayName } else { "Unknown" }
+            OS = $os
+            App = $clientApp
             
             # Conditional Access
-            ConditionalAccessStatus = $caResult
-            ConditionalAccessPolicies = if ($log.appliedConditionalAccessPolicies) { 
-                ($log.appliedConditionalAccessPolicies | ForEach-Object { "$($_.displayName): $($_.result)" }) -join "; " 
-            } else { "None Applied" }
+            CAStatus = $caResult
+            CAPolicies = if ($log.appliedConditionalAccessPolicies) { 
+                ($log.appliedConditionalAccessPolicies | ForEach-Object { $_.result }) -join ", " 
+            } else { "None" }
             
-            # Sign-in Status
-            SignInStatus = if ($log.status) { $log.status.errorCode } else { "Unknown" }
-            SignInResult = if ($log.status) { $log.status.failureReason } else { "Unknown" }
-            SignInSuccess = if ($log.status) { $log.status.errorCode -eq 0 } else { $false }
-            
-            # Additional Security Context
-            IsInteractive = $log.isInteractive
-            IsRisky = $log.isRisky
-            ResourceDisplayName = $log.resourceDisplayName
-            ResourceId = $log.resourceId
-            
-            # Time-based Analysis
-            SignInHour = (Get-Date $log.createdDateTime).Hour
-            SignInDayOfWeek = (Get-Date $log.createdDateTime).DayOfWeek
-            
-            # Raw Data for Deep Analysis
-            RawData = $log | ConvertTo-Json -Depth 5
+            # Quick Analysis
+            Hour = (Get-Date $log.createdDateTime).Hour
+            Day = (Get-Date $log.createdDateTime).DayOfWeek
+            Interactive = $log.isInteractive
         }
     }
     
