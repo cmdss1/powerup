@@ -225,35 +225,231 @@ function Get-EmailForwardingRules {
     
     Write-Host "Checking email forwarding rules for $UPN..." -ForegroundColor Yellow
     
+    $allForwardingData = @()
+    
     try {
-        # Get forwarding rules from audit logs
+        # Method 1: Get forwarding rules from audit logs
+        Write-Host "  Checking audit logs for forwarding activities..." -ForegroundColor Cyan
         $filters = @()
         $filters += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
-        $filters += "initiatedBy/user/userPrincipalName eq '$UPN'"
+        
+        if ($UPN) {
+            $filters += "initiatedBy/user/userPrincipalName eq '$UPN'"
+        }
         
         $filterString = $filters -join " and "
         
         # Get audit logs related to forwarding rules
         $forwardingLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
-            $_.activityDisplayName -match "Forward|Rule|Mailbox|Inbox" -or
-            $_.operationType -match "Forward|Rule|Mail" -or
-            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { $_.key -match "Forward|Rule|Mail" }))
+            $_.activityDisplayName -match "Forward|Rule|Mailbox|Inbox|Exchange" -or
+            $_.operationType -match "Forward|Rule|Mail|Exchange" -or
+            $_.category -match "Exchange" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { $_.key -match "Forward|Rule|Mail|Exchange" }))
         }
         
         # Also check for any rules that might forward TO this user
-        $filtersTo = @()
-        $filtersTo += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
-        $filterStringTo = $filtersTo -join " and "
-        
-        $forwardingToLogs = Get-MgAuditLogDirectoryAudit -Filter $filterStringTo -All | Where-Object {
-            ($_.targetResources -and ($_.targetResources | Where-Object { $_.displayName -eq $UPN })) -and
-            ($_.activityDisplayName -match "Forward|Rule|Mailbox" -or $_.operationType -match "Forward|Rule|Mail")
+        if ($UPN) {
+            $filtersTo = @()
+            $filtersTo += "activityDateTime ge $StartDate and activityDateTime le $EndDate"
+            $filterStringTo = $filtersTo -join " and "
+            
+            $forwardingToLogs = Get-MgAuditLogDirectoryAudit -Filter $filterStringTo -All | Where-Object {
+                ($_.targetResources -and ($_.targetResources | Where-Object { $_.displayName -eq $UPN })) -and
+                ($_.activityDisplayName -match "Forward|Rule|Mailbox|Exchange" -or $_.operationType -match "Forward|Rule|Mail|Exchange")
+            }
+            
+            $forwardingLogs = $forwardingLogs + $forwardingToLogs
         }
         
-        $allForwardingLogs = $forwardingLogs + $forwardingToLogs
+        Write-Host "  Found $($forwardingLogs.Count) forwarding-related audit activities" -ForegroundColor Green
+        $allForwardingData += $forwardingLogs
         
-        Write-Host "Found $($allForwardingLogs.Count) forwarding-related activities" -ForegroundColor Green
-        return $allForwardingLogs
+        # Method 2: Check current mailbox forwarding configuration via Graph API
+        if ($UPN) {
+            Write-Host "  Checking current mailbox forwarding configuration..." -ForegroundColor Cyan
+            try {
+                # Get user's mailbox settings
+                $user = Get-MgUser -UserId $UPN -Property "mail,mailNickname,userPrincipalName"
+                
+                # Try to get mailbox forwarding rules via Graph API
+                $mailboxSettings = @()
+                
+                # Check for forwarding rules in additional details of recent audit logs
+                $recentLogs = Get-MgAuditLogDirectoryAudit -Filter "activityDateTime ge $StartDate" -All | Where-Object {
+                    $_.targetResources -and ($_.targetResources | Where-Object { $_.displayName -eq $UPN -or $_.displayName -eq $user.mail })
+                }
+                
+                foreach ($log in $recentLogs) {
+                    if ($log.additionalDetails) {
+                        $forwardingDetails = $log.additionalDetails | Where-Object { 
+                            $_.key -match "Forward|Rule|Mail|Exchange|Smtp|Recipient" 
+                        }
+                        
+                        if ($forwardingDetails) {
+                            $mailboxSettings += [PSCustomObject]@{
+                                activityDateTime = $log.activityDateTime
+                                activityDisplayName = "Current Mailbox Forwarding Configuration"
+                                initiatedBy = $log.initiatedBy
+                                targetResources = $log.targetResources
+                                result = "success"
+                                category = "Exchange"
+                                operationType = "MailboxForwarding"
+                                additionalDetails = $log.additionalDetails
+                            }
+                        }
+                    }
+                }
+                
+                Write-Host "  Found $($mailboxSettings.Count) current mailbox forwarding configurations" -ForegroundColor Green
+                $allForwardingData += $mailboxSettings
+                
+            } catch {
+                Write-Warning "  Could not check current mailbox configuration: $($_.Exception.Message)"
+            }
+        }
+        
+        # Method 2.5: Check for Exchange Online PowerShell activities specifically
+        Write-Host "  Checking Exchange Online PowerShell activities..." -ForegroundColor Cyan
+        $exchangePowerShellLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Exchange Online|ExchangeOnline|EXO" -or
+            $_.operationType -match "ExchangeOnline|EXO" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.value -match "Exchange Online|ExchangeOnline|EXO|Set-Mailbox|New-InboxRule|Set-InboxRule|Remove-InboxRule|Set-MailboxForwarding|Get-Mailbox|Get-InboxRule"
+            }))
+        }
+        
+        Write-Host "  Found $($exchangePowerShellLogs.Count) Exchange Online PowerShell activities" -ForegroundColor Green
+        $allForwardingData += $exchangePowerShellLogs
+        
+        # Method 3: Check for Exchange Online activities
+        Write-Host "  Checking Exchange Online activities..." -ForegroundColor Cyan
+        $exchangeLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.category -eq "Exchange" -or
+            $_.activityDisplayName -match "Exchange|Mailbox|Inbox|Outbox" -or
+            $_.operationType -match "Exchange|Mailbox"
+        }
+        
+        Write-Host "  Found $($exchangeLogs.Count) Exchange Online activities" -ForegroundColor Green
+        $allForwardingData += $exchangeLogs
+        
+        # Method 4: Check for PowerShell/Admin activities that might include forwarding
+        Write-Host "  Checking PowerShell and admin activities..." -ForegroundColor Cyan
+        $powerShellLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "PowerShell|Admin|Set-|New-|Remove-|Update-" -or
+            $_.operationType -match "PowerShell|Admin|Set|New|Remove|Update" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Command|Cmdlet|PowerShell" -or
+                $_.value -match "Set-Mailbox|New-InboxRule|Set-InboxRule|Remove-InboxRule|Set-MailboxForwarding"
+            }))
+        }
+        
+        Write-Host "  Found $($powerShellLogs.Count) PowerShell/admin activities" -ForegroundColor Green
+        $allForwardingData += $powerShellLogs
+        
+        # Method 5: Check for any activities with "Forward" in additional details
+        Write-Host "  Checking for forwarding references in all activities..." -ForegroundColor Cyan
+        $allRecentLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All
+        $forwardingReferences = $allRecentLogs | Where-Object {
+            $_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.value -match "Forward|forward|FORWARD" -or
+                $_.key -match "Forward|forward|FORWARD"
+            })
+        }
+        
+        Write-Host "  Found $($forwardingReferences.Count) activities with forwarding references" -ForegroundColor Green
+        $allForwardingData += $forwardingReferences
+        
+        # Method 6: Check for any activities that might be related to mailbox configuration
+        Write-Host "  Checking for mailbox configuration activities..." -ForegroundColor Cyan
+        $mailboxConfigLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Mailbox|Inbox|Outbox|Sent|Draft|Junk|Spam" -or
+            $_.operationType -match "Mailbox|Inbox|Outbox|Sent|Draft|Junk|Spam" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Mailbox|Inbox|Outbox|Sent|Draft|Junk|Spam" -or
+                $_.value -match "Mailbox|Inbox|Outbox|Sent|Draft|Junk|Spam"
+            }))
+        }
+        
+        Write-Host "  Found $($mailboxConfigLogs.Count) mailbox configuration activities" -ForegroundColor Green
+        $allForwardingData += $mailboxConfigLogs
+        
+        # Method 7: Check for any activities with "Rule" in the name or details
+        Write-Host "  Checking for rule-related activities..." -ForegroundColor Cyan
+        $ruleLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Rule|rule|RULE" -or
+            $_.operationType -match "Rule|rule|RULE" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Rule|rule|RULE" -or
+                $_.value -match "Rule|rule|RULE"
+            }))
+        }
+        
+        Write-Host "  Found $($ruleLogs.Count) rule-related activities" -ForegroundColor Green
+        $allForwardingData += $ruleLogs
+        
+        # Method 8: Check for any activities that might be related to email configuration
+        Write-Host "  Checking for email configuration activities..." -ForegroundColor Cyan
+        $emailConfigLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Email|email|EMAIL|Smtp|SMTP|smtp" -or
+            $_.operationType -match "Email|email|EMAIL|Smtp|SMTP|smtp" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Email|email|EMAIL|Smtp|SMTP|smtp" -or
+                $_.value -match "Email|email|EMAIL|Smtp|SMTP|smtp"
+            }))
+        }
+        
+        Write-Host "  Found $($emailConfigLogs.Count) email configuration activities" -ForegroundColor Green
+        $allForwardingData += $emailConfigLogs
+        
+        # Method 9: Check for any activities that might be related to Exchange Online
+        Write-Host "  Checking for Exchange Online activities..." -ForegroundColor Cyan
+        $exchangeOnlineLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Exchange Online|ExchangeOnline|EXO|Exchange" -or
+            $_.operationType -match "Exchange Online|ExchangeOnline|EXO|Exchange" -or
+            $_.category -match "Exchange" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Exchange Online|ExchangeOnline|EXO|Exchange" -or
+                $_.value -match "Exchange Online|ExchangeOnline|EXO|Exchange"
+            }))
+        }
+        
+        Write-Host "  Found $($exchangeOnlineLogs.Count) Exchange Online activities" -ForegroundColor Green
+        $allForwardingData += $exchangeOnlineLogs
+        
+        # Method 10: Check for any activities that might be related to mailbox forwarding
+        Write-Host "  Checking for mailbox forwarding activities..." -ForegroundColor Cyan
+        $mailboxForwardingLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Mailbox Forwarding|MailboxForwarding|Forwarding" -or
+            $_.operationType -match "Mailbox Forwarding|MailboxForwarding|Forwarding" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Mailbox Forwarding|MailboxForwarding|Forwarding" -or
+                $_.value -match "Mailbox Forwarding|MailboxForwarding|Forwarding"
+            }))
+        }
+        
+        Write-Host "  Found $($mailboxForwardingLogs.Count) mailbox forwarding activities" -ForegroundColor Green
+        $allForwardingData += $mailboxForwardingLogs
+        
+        # Method 11: Check for any activities that might be related to inbox rules
+        Write-Host "  Checking for inbox rule activities..." -ForegroundColor Cyan
+        $inboxRuleLogs = Get-MgAuditLogDirectoryAudit -Filter $filterString -All | Where-Object {
+            $_.activityDisplayName -match "Inbox Rule|InboxRule|Inbox" -or
+            $_.operationType -match "Inbox Rule|InboxRule|Inbox" -or
+            ($_.additionalDetails -and ($_.additionalDetails | Where-Object { 
+                $_.key -match "Inbox Rule|InboxRule|Inbox" -or
+                $_.value -match "Inbox Rule|InboxRule|Inbox"
+            }))
+        }
+        
+        Write-Host "  Found $($inboxRuleLogs.Count) inbox rule activities" -ForegroundColor Green
+        $allForwardingData += $inboxRuleLogs
+        
+        # Remove duplicates based on activityDateTime and activityDisplayName
+        $uniqueForwardingData = $allForwardingData | Sort-Object activityDateTime -Descending | Get-Unique -AsString
+        
+        Write-Host "Total unique forwarding-related data found: $($uniqueForwardingData.Count)" -ForegroundColor Green
+        return $uniqueForwardingData
+        
     } catch {
         Write-Error "Failed to check forwarding rules: $($_.Exception.Message)"
         return @()
