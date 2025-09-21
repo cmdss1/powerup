@@ -609,6 +609,164 @@ function Convert-ForwardingRulesForSOC {
     return $enhancedLogs
 }
 
+# Function to create a comprehensive timeline from all log types
+function New-SecurityTimeline {
+    param(
+        [object]$UALLogs,
+        [object]$SignInLogs,
+        [object]$PurviewLogs,
+        [object]$ForwardingLogs,
+        [string]$UPN = ""
+    )
+    
+    Write-Host "Creating comprehensive security timeline..." -ForegroundColor Yellow
+    
+    $timeline = @()
+    
+    # Process UAL logs
+    if ($UALLogs) {
+        foreach ($log in $UALLogs) {
+            $timeline += [PSCustomObject]@{
+                Timestamp = (Get-Date $log.activityDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+                EventType = "Directory Activity"
+                User = if ($log.initiatedBy.user) { $log.initiatedBy.user.userPrincipalName } else { "System" }
+                Activity = $log.activityDisplayName
+                Result = $log.result
+                IPAddress = if ($log.additionalDetails) {
+                    $ipDetail = $log.additionalDetails | Where-Object { $_.key -eq "IpAddress" }
+                    if ($ipDetail) { $ipDetail.value } else { "Unknown" }
+                } else { "Unknown" }
+                Details = if ($log.additionalDetails) {
+                    ($log.additionalDetails | ForEach-Object { "$($_.key): $($_.value)" }) -join "; "
+                } else { "None" }
+                RiskLevel = "Medium"
+                Category = $log.category
+                OperationType = $log.operationType
+                Target = if ($log.targetResources) {
+                    ($log.targetResources | ForEach-Object { $_.displayName }) -join ", "
+                } else { "Unknown" }
+                Source = "Unified Audit Logs"
+            }
+        }
+    }
+    
+    # Process Sign-in logs
+    if ($SignInLogs) {
+        foreach ($log in $SignInLogs) {
+            $location = if ($log.location) {
+                "$($log.location.city), $($log.location.state), $($log.location.countryOrRegion)"
+            } else { "Unknown" }
+            
+            $riskLevel = if ($log.riskLevelDuringSignIn) {
+                $log.riskLevelDuringSignIn
+            } else { "Not Assessed" }
+            
+            $authMethods = if ($log.authenticationDetails) {
+                ($log.authenticationDetails | ForEach-Object { $_.authenticationMethod }) -join ", "
+            } else { "Unknown" }
+            
+            $timeline += [PSCustomObject]@{
+                Timestamp = (Get-Date $log.createdDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+                EventType = "Authentication"
+                User = $log.userPrincipalName
+                Activity = "Sign-in Attempt"
+                Result = if ($log.status) { if ($log.status.errorCode -eq 0) { "Success" } else { "Failed" } } else { "Unknown" }
+                IPAddress = $log.ipAddress
+                Details = "Location: $location; Auth: $authMethods; Device: $(if ($log.deviceDetail) { $log.deviceDetail.displayName } else { 'Unknown' })"
+                RiskLevel = $riskLevel
+                Category = "Sign-in"
+                OperationType = "Authentication"
+                Target = $log.userPrincipalName
+                Source = "Sign-in Logs"
+            }
+        }
+    }
+    
+    # Process Purview logs
+    if ($PurviewLogs) {
+        foreach ($log in $PurviewLogs) {
+            $fileName = if ($log.additionalDetails) {
+                $fileDetail = $log.additionalDetails | Where-Object { $_.key -match "FileName|ObjectId" }
+                if ($fileDetail) { $fileDetail.value } else { "Unknown" }
+            } else { "Unknown" }
+            
+            $timeline += [PSCustomObject]@{
+                Timestamp = (Get-Date $log.activityDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+                EventType = "Data Access"
+                User = if ($log.initiatedBy.user) { $log.initiatedBy.user.userPrincipalName } else { "System" }
+                Activity = $log.activityDisplayName
+                Result = $log.result
+                IPAddress = if ($log.additionalDetails) {
+                    $ipDetail = $log.additionalDetails | Where-Object { $_.key -eq "IpAddress" }
+                    if ($ipDetail) { $ipDetail.value } else { "Unknown" }
+                } else { "Unknown" }
+                Details = "File: $fileName; " + (if ($log.additionalDetails) {
+                    ($log.additionalDetails | ForEach-Object { "$($_.key): $($_.value)" }) -join "; "
+                } else { "None" })
+                RiskLevel = if ($log.activityDisplayName -match "Delete|Remove|Share|Forward") { "High" } else { "Medium" }
+                Category = $log.category
+                OperationType = $log.operationType
+                Target = if ($log.targetResources) {
+                    ($log.targetResources | ForEach-Object { $_.displayName }) -join ", "
+                } else { "Unknown" }
+                Source = "Purview Logs"
+            }
+        }
+    }
+    
+    # Process Forwarding logs
+    if ($ForwardingLogs) {
+        foreach ($log in $ForwardingLogs) {
+            $forwardingDetails = if ($log.additionalDetails) {
+                $forwardDetail = $log.additionalDetails | Where-Object { $_.key -match "Forward|Rule|Mail" }
+                if ($forwardDetail) { $forwardDetail.value } else { "Unknown" }
+            } else { "Unknown" }
+            
+            $timeline += [PSCustomObject]@{
+                Timestamp = (Get-Date $log.activityDateTime).ToString("yyyy-MM-dd HH:mm:ss")
+                EventType = "Email Security"
+                User = if ($log.initiatedBy.user) { $log.initiatedBy.user.userPrincipalName } else { "System" }
+                Activity = $log.activityDisplayName
+                Result = $log.result
+                IPAddress = if ($log.additionalDetails) {
+                    $ipDetail = $log.additionalDetails | Where-Object { $_.key -eq "IpAddress" }
+                    if ($ipDetail) { $ipDetail.value } else { "Unknown" }
+                } else { "Unknown" }
+                Details = "Forwarding: $forwardingDetails; " + (if ($log.additionalDetails) {
+                    ($log.additionalDetails | ForEach-Object { "$($_.key): $($_.value)" }) -join "; "
+                } else { "None" })
+                RiskLevel = "High"
+                Category = $log.category
+                OperationType = $log.operationType
+                Target = if ($log.targetResources) {
+                    ($log.targetResources | ForEach-Object { $_.displayName }) -join ", "
+                } else { "Unknown" }
+                Source = "Forwarding Rules"
+            }
+        }
+    }
+    
+    # Sort by timestamp
+    $timeline = $timeline | Sort-Object { [DateTime]::ParseExact($_.Timestamp, "yyyy-MM-dd HH:mm:ss", $null) }
+    
+    # Add sequence numbers and time gaps
+    for ($i = 0; $i -lt $timeline.Count; $i++) {
+        $timeline[$i] | Add-Member -NotePropertyName "Sequence" -NotePropertyValue ($i + 1) -Force
+        
+        if ($i -gt 0) {
+            $currentTime = [DateTime]::ParseExact($timeline[$i].Timestamp, "yyyy-MM-dd HH:mm:ss", $null)
+            $previousTime = [DateTime]::ParseExact($timeline[$i-1].Timestamp, "yyyy-MM-dd HH:mm:ss", $null)
+            $timeGap = $currentTime - $previousTime
+            $timeline[$i] | Add-Member -NotePropertyName "TimeGap" -NotePropertyValue "$($timeGap.TotalMinutes.ToString('F1')) minutes" -Force
+        } else {
+            $timeline[$i] | Add-Member -NotePropertyName "TimeGap" -NotePropertyValue "Start" -Force
+        }
+    }
+    
+    Write-Host "Timeline created with $($timeline.Count) events" -ForegroundColor Green
+    return $timeline
+}
+
 # Function to fetch Purview audit logs
 function Get-PurviewAuditLogs {
     param(
@@ -973,6 +1131,11 @@ function Main {
             Write-Host "Checking Email Forwarding Rules for $UPN..." -ForegroundColor Yellow
             $forwardingRules = Get-EmailForwardingRules -UPN $UPN -StartDate $startDate -EndDate $endDate
             Export-DataToExcel -Data $forwardingRules -FileName "ForwardingRules_$safeUPN" -OutputPath $OutputPath -SheetName "Forwarding Rules" -EnhanceForSOC
+            
+            # Create comprehensive security timeline
+            Write-Host "Creating Security Timeline for $UPN..." -ForegroundColor Yellow
+            $timeline = New-SecurityTimeline -UALLogs $ualLogs -SignInLogs $signInLogs -PurviewLogs $purviewLogs -ForwardingLogs $forwardingRules -UPN $UPN
+            Export-DataToExcel -Data $timeline -FileName "SecurityTimeline_$safeUPN" -OutputPath $OutputPath -SheetName "Security Timeline"
         } else {
             # Fetch all UAL logs
             Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
@@ -993,6 +1156,11 @@ function Main {
             Write-Host "Checking Email Forwarding Rules..." -ForegroundColor Yellow
             $forwardingRules = Get-EmailForwardingRules -UPN "" -StartDate $startDate -EndDate $endDate
             Export-DataToExcel -Data $forwardingRules -FileName "ForwardingRules" -OutputPath $OutputPath -SheetName "Forwarding Rules" -EnhanceForSOC
+            
+            # Create comprehensive security timeline for all users
+            Write-Host "Creating Security Timeline for all users..." -ForegroundColor Yellow
+            $timeline = New-SecurityTimeline -UALLogs $ualLogs -SignInLogs $signInLogs -PurviewLogs $purviewLogs -ForwardingLogs $forwardingRules
+            Export-DataToExcel -Data $timeline -FileName "SecurityTimeline" -OutputPath $OutputPath -SheetName "Security Timeline"
         }
         
         Write-Host ""
