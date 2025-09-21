@@ -127,20 +127,24 @@ A PowerShell tool to fetch Microsoft tenant data including Unified Audit Logs (U
 The tool creates timestamped Excel and JSON files in the output directory:
 
 ### Excel Files (Primary Output)
-- `UnifiedAuditLogs_YYYYMMDD_HHMMSS.xlsx`: Directory audit logs in Excel format
-- `SignInLogs_YYYYMMDD_HHMMSS.xlsx`: User sign-in activities in Excel format
-- `AuditActivity_UPN_YYYYMMDD_HHMMSS.xlsx`: Combined audit activity for specific UPN in Excel format
+
+**When UPN is specified:**
+- `UnifiedAuditLogs_UPN_YYYYMMDD_HHMMSS.xlsx`: Directory audit logs for specific user
+- `SignInLogs_UPN_YYYYMMDD_HHMMSS.xlsx`: Sign-in activities for specific user
+
+**When UPN is not specified (all tenant data):**
+- `UnifiedAuditLogs_YYYYMMDD_HHMMSS.xlsx`: All directory audit logs
+- `SignInLogs_YYYYMMDD_HHMMSS.xlsx`: All sign-in activities
 
 ### JSON Files (Backup)
 - `UnifiedAuditLogs_YYYYMMDD_HHMMSS.json`: Directory audit logs in JSON format
 - `SignInLogs_YYYYMMDD_HHMMSS.json`: User sign-in activities in JSON format
-- `AuditActivity_UPN_YYYYMMDD_HHMMSS.json`: Combined audit activity for specific UPN in JSON format
 
 ### Excel Features
 - **Formatted Tables**: Data is exported as formatted Excel tables with headers
 - **Auto-sizing**: Columns automatically adjust to content width
 - **Professional Styling**: Medium2 table style with bold headers
-- **Multiple Worksheets**: Each log type gets its own worksheet
+- **Separate Files**: Each log type gets its own Excel file for better organization
 
 ## Data Structure
 
@@ -156,10 +160,10 @@ The tool creates timestamped Excel and JSON files in the output directory:
 - Risk assessment data
 - Conditional access results
 
-### Audit Activity (UPN-specific)
-- Combined directory and sign-in activities
-- Chronologically sorted by timestamp
-- Enhanced with location and device details
+### UPN-specific Data
+- **Unified Audit Logs**: Directory audit activities for the specified user
+- **Sign-in Logs**: Authentication activities for the specified user
+- **Separate Files**: Each log type is exported to its own Excel file
 
 ## Security Considerations
 

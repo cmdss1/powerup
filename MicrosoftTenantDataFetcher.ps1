@@ -258,57 +258,6 @@ function Get-SignInLogs {
     }
 }
 
-# Function to fetch Audit Activity for specific UPN
-function Get-AuditActivityForUPN {
-    param(
-        [string]$UPN,
-        [string]$StartDate,
-        [string]$EndDate
-    )
-    
-    Write-Host "Fetching audit activity for UPN: $UPN" -ForegroundColor Yellow
-    
-    $activities = @()
-    
-    # Get directory audit logs for the user
-    $directoryAudits = Get-UnifiedAuditLogs -StartDate $StartDate -EndDate $EndDate -UPN $UPN
-    
-    # Get sign-in logs for the user
-    $signInLogs = Get-SignInLogs -StartDate $StartDate -EndDate $EndDate -UPN $UPN
-    
-    # Combine and format the results
-    $activities += $directoryAudits | ForEach-Object {
-        [PSCustomObject]@{
-            Type = "Directory Audit"
-            Timestamp = $_.activityDateTime
-            Activity = $_.activityDisplayName
-            User = $_.initiatedBy.user.userPrincipalName
-            Result = $_.result
-            Details = $_.additionalDetails
-            IPAddress = $_.additionalDetails | Where-Object { $_.key -eq "IpAddress" } | Select-Object -ExpandProperty value
-        }
-    }
-    
-    $activities += $signInLogs | ForEach-Object {
-        [PSCustomObject]@{
-            Type = "Sign-in"
-            Timestamp = $_.createdDateTime
-            Activity = "Sign-in"
-            User = $_.userPrincipalName
-            Result = $_.status.errorCode
-            Details = $_.status
-            IPAddress = $_.ipAddress
-            Location = $_.location.city + ", " + $_.location.state + ", " + $_.location.countryOrRegion
-            Device = $_.deviceDetail.displayName
-        }
-    }
-    
-    # Sort by timestamp
-    $activities = $activities | Sort-Object Timestamp -Descending
-    
-    Write-Host "Total audit activities for $UPN : $($activities.Count)" -ForegroundColor Green
-    return $activities
-}
 
 # Function to export data to Excel files
 function Export-DataToExcel {
@@ -430,10 +379,18 @@ function Main {
         
         # Fetch data based on parameters
         if ($UPN) {
-            # Fetch audit activity for specific UPN
+            # Fetch audit activity for specific UPN - create separate files for each type
             Write-Host "Fetching audit activity for UPN: $UPN" -ForegroundColor Yellow
-            $auditActivity = Get-AuditActivityForUPN -UPN $UPN -StartDate $startDate -EndDate $endDate
-            Export-DataToExcel -Data $auditActivity -FileName "AuditActivity_$($UPN.Replace('@', '_').Replace('.', '_'))" -OutputPath $OutputPath -SheetName "Audit Activity"
+            
+            # Get directory audit logs for the user
+            Write-Host "Fetching Unified Audit Logs for $UPN..." -ForegroundColor Yellow
+            $ualLogs = Get-UnifiedAuditLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
+            Export-DataToExcel -Data $ualLogs -FileName "UnifiedAuditLogs_$($UPN.Replace('@', '_').Replace('.', '_'))" -OutputPath $OutputPath -SheetName "Unified Audit Logs"
+            
+            # Get sign-in logs for the user
+            Write-Host "Fetching Sign-in Logs for $UPN..." -ForegroundColor Yellow
+            $signInLogs = Get-SignInLogs -StartDate $startDate -EndDate $endDate -UPN $UPN
+            Export-DataToExcel -Data $signInLogs -FileName "SignInLogs_$($UPN.Replace('@', '_').Replace('.', '_'))" -OutputPath $OutputPath -SheetName "Sign-in Logs"
         } else {
             # Fetch all UAL logs
             Write-Host "Fetching Unified Audit Logs..." -ForegroundColor Yellow
